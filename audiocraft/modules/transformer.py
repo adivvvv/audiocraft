@@ -20,7 +20,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
-from xformers import ops
+# Disable xformers safely
+ops = None
 
 from .rope import RotaryEmbedding
 from .streaming import StreamingModule
@@ -43,12 +44,7 @@ def _get_attention_time_dimension(memory_efficient: bool) -> int:
 
 
 def _is_profiled() -> bool:
-    # Return true if we are currently running with a xformers profiler activated.
-    try:
-        from xformers.profiler import profiler
-    except ImportError:
-        return False
-    return profiler._Profiler._CURRENT_PROFILER is not None
+    return False
 
 
 def create_norm_fn(norm_type: str, dim: int, **kwargs) -> nn.Module:
@@ -724,31 +720,11 @@ class StreamingTransformer(StreamingModule):
 # special attention related function
 
 def _verify_xformers_memory_efficient_compat():
-    try:
-        from xformers.ops import memory_efficient_attention, LowerTriangularMask  # noqa
-    except ImportError:
-        raise ImportError(
-            "xformers is not installed. Please install it and try again.\n"
-            "To install on AWS and Azure, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='8.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n"
-            "To install on FAIR Cluster, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='6.0;7.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n")
+    pass
 
 
 def _verify_xformers_internal_compat():
-    try:
-        from xformers.checkpoint_fairinternal import checkpoint, _get_default_policy  # noqa
-    except ImportError:
-        raise ImportError(
-            "Francisco's fairinternal xformers is not installed. Please install it and try again.\n"
-            "To install on AWS and Azure, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='8.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n"
-            "To install on FAIR Cluster, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='6.0;7.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n")
+    pass
 
 
 def _is_custom(custom: bool, memory_efficient: bool):
