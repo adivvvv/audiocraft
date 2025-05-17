@@ -227,20 +227,23 @@ class StreamingMultiheadAttention(StreamingModule):
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _get_mask(self, current_steps: int, device: torch.device, dtype: torch.dtype):
-        # Return a causal mask, accounting for potentially stored past keys/values
-        # We actually return a bias for the attention score, as this has the same
-        # convention both in the builtin MHA in Pytorch, and Xformers functions.
+        # Return a causal mask, accounting for potentially stored past keys/values.
         time_dim = _get_attention_time_dimension(self.memory_efficient)
+
         if self.memory_efficient:
-            from xformers.ops import LowerTriangularMask
             if current_steps == 1:
-                # If we only have one step, then we do not need a mask.
                 return None
             elif 'past_keys' in self._streaming_state:
                 raise RuntimeError("Not supported at the moment")
             else:
-                # Then we can safely use a lower triangular mask
-                return LowerTriangularMask()
+                # Causal mask (lower triangle)
+                causal_mask = torch.triu(
+                    torch.full((current_steps, current_steps), float('-inf'), device=device, dtype=dtype),
+                    diagonal=1
+                )
+                # Add batch/head dimension if needed
+                return causal_mask.unsqueeze(0)
+
         if self._streaming_state:
             past_keys = self._streaming_state['past_keys']
             past_steps = past_keys.shape[time_dim]
@@ -252,12 +255,16 @@ class StreamingMultiheadAttention(StreamingModule):
         keys_pos = torch.arange(past_steps + current_steps, device=device).view(1, -1)
         delta = queries_pos - keys_pos
         valid = delta >= 0
+
         if self.past_context is not None:
             valid &= (delta <= self.past_context)
+
         return torch.where(
             valid,
-            torch.zeros([], device=device, dtype=dtype),
-            torch.full([], float('-inf'), device=device, dtype=dtype))
+            torch.zeros((current_steps, current_steps), device=device, dtype=dtype),
+            torch.full((current_steps, current_steps), float('-inf'), device=device, dtype=dtype)
+        ).unsqueeze(0)
+
 
     def _complete_kv(self, k, v):
         time_dim = _get_attention_time_dimension(self.memory_efficient)
@@ -367,7 +374,7 @@ class StreamingMultiheadAttention(StreamingModule):
                     else:
                         bound_layout = "b t p h d"
                     packed = rearrange(projected, f"b t (p h d) -> {bound_layout}", p=3, h=self.num_heads)
-                    q, k, v = ops.unbind(packed, dim=2)
+                    q, k, v = torch.unbind(packed, dim=2)
                 else:
                     embed_dim = self.embed_dim
                     per_head_dim = (embed_dim // self.num_heads)
@@ -405,11 +412,9 @@ class StreamingMultiheadAttention(StreamingModule):
                     attn_mask = attn_mask[..., :seq_len, :seq_len]
 
                 p = self.dropout if self.training else 0
-                if _efficient_attention_backend == 'torch':
-                    x = torch.nn.functional.scaled_dot_product_attention(
-                        q, k, v, is_causal=attn_mask is not None, dropout_p=p)
-                else:
-                    x = ops.memory_efficient_attention(q, k, v, attn_mask, p=p)
+                x = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, attn_mask, dropout_p=p, is_causal=False
+                )
             else:
                 # We include the dot product as float32, for consistency
                 # with the other implementations that include that step
